@@ -1,0 +1,52 @@
+.icon-wrap {
+  min-height: 60px;
+  font-size: 64px;
+}
+
+.card .card-title {
+  font-size: 32px;
+  font-weight: 301;
+}
+
+.wc {
+  flex: 1;
+}
+
+.weather {
+  display: flex;
+  flex-direction: column; /* Stack flex items vertically */
+  align-items: center; /* Center flex items horizontally */
+
+  .temp {
+    display: flex;
+    align-items: center; /* Center elements vertically */
+    font-size: 16px;
+
+    .label {
+      margin-right: 8px; /* Add space to the right of the label */
+    }
+
+    .value::after {
+      content: " °F";
+    }
+  }
+}
+
+
+.reaction {
+  width: 100%; /* Set the width of the container to 100% */
+  height: auto; /* Set the height of the container to auto */
+  margin-top: 24px;
+
+  img {
+    max-width: 100%; /* Set the max-width of the image to 100% */
+    height: auto; /* Set the height of the image to auto */
+  }
+}
+
+.outline-shadow {
+  text-shadow: -1px -1px 0 rgba(0, 0, 0, 0.5),
+                1px -1px 0 rgba(0, 0, 0, 0.5),
+                -1px  1px 0 rgba(0, 0, 0, 0.5),
+                1px  1px 0 rgba(0, 0, 0, 0.5);
+}
