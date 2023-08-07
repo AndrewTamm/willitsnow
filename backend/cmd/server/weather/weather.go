@@ -7,9 +7,9 @@ import (
 	"net/http"
 )
 
-func GetWeatherFunc(cfg *config.Config) func(ctx *gin.Context) {
+func GetWeatherFunc(cfg *config.Config, weatherApi api.Weather) func(ctx *gin.Context) {
 	return func(c *gin.Context) {
-		weather, err := api.CallWeatherApi(cfg.Weather.Location)
+		weather, err := weatherApi.CallWeatherApi(cfg.Weather.Location)
 		if err != nil {
 			_ = c.Error(err)
 			return
