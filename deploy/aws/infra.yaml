@@ -1,0 +1,460 @@
+Parameters:
+  ServiceName:
+    Type: String
+    Description: A tag to place on all resources created by this formation
+  CertificateArn:
+    Type: String
+    Description: The ARN of the ACM certificate
+  HostedZoneId:
+    Type: String
+    Description: The ID of the HostedZone for the dns domain
+  DomainName:
+    Type: String
+    Description: The dns domain name
+  AlternativeHostedZoneId:
+    Type: String
+    Description: The ID of the HostedZone for the dns domain
+    Default: ''
+  AlternativeDomainName:
+    Type: String
+    Description: The dns domain name
+    Default: ''
+  ContainerPort:
+    Type: Number
+    Default: 8080
+    Description: The port number the application inside the docker container is binding to
+  HostPort:
+    Type: Number
+    Default: 8080
+    Description: The published port exposed on the docker host
+
+Mappings:
+  SubnetConfig:
+    VPC:
+      CIDR: '10.0.0.0/16'
+    PublicOne:
+      CIDR: '10.0.2.0/24'
+    PublicTwo:
+      CIDR: '10.0.3.0/24'
+
+Conditions:
+  HasAlternativeDomain:
+    !And
+      - !Not [!Equals [!Ref AlternativeHostedZoneId, '']]
+      - !Not [!Equals [!Ref AlternativeDomainName, '']]
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      CidrBlock: !FindInMap ['SubnetConfig', 'VPC', 'CIDR']
+
+  PublicSubnetOne:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-west-2c
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap [ 'SubnetConfig', 'PublicOne', 'CIDR' ]
+
+  PublicSubnetTwo:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-west-2d
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap [ 'SubnetConfig', 'PublicTwo', 'CIDR' ]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  GatewayAttachement:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref 'VPC'
+      InternetGatewayId: !Ref 'InternetGateway'
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachement
+    Properties:
+      RouteTableId: !Ref 'PublicRouteTable'
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref 'InternetGateway'
+
+  PublicSubnetOneRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetOne
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetTwoRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetTwo
+      RouteTableId: !Ref PublicRouteTable
+
+  # The ECS Cluster
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+
+  FargateContainerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access to the Fargate containers
+      VpcId: !Ref 'VPC'
+
+  EcsSecurityGroupIngressFromPublicALB:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Ingress from the public ALB
+      GroupId: !Ref 'FargateContainerSecurityGroup'
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref 'PublicLoadBalancerSG'
+
+  EcsSecurityGroupIngressFromSelf:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Ingress from other containers in the same security group
+      GroupId: !Ref 'FargateContainerSecurityGroup'
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref 'FargateContainerSecurityGroup'
+
+  PublicLoadBalancerSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access to the public facing load balancer
+      VpcId: !Ref 'VPC'
+      SecurityGroupIngress:
+        # Allow access to ALB from anywhere on the internet
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+          FromPort: 9000
+          ToPort: 9010
+
+  PublicLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '30'
+      Subnets:
+        - !Ref PublicSubnetOne
+        - !Ref PublicSubnetTwo
+      SecurityGroups: [ !Ref PublicLoadBalancerSG ]
+
+  ECSRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ ecs.amazonaws.com ]
+            Action: [ 'sts:AssumeRole' ]
+      Path: /
+      Policies:
+        - PolicyName: ecs-service
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ec2:AttachNetworkInterface'
+                  - 'ec2:CreateNetworkInterface'
+                  - 'ec2:CreateNetworkInterfacePermission'
+                  - 'ec2:DeleteNetworkInterface'
+                  - 'ec2:DeleteNetworkInterfacePermission'
+                  - 'ec2:Describe*'
+                  - 'ec2:DetachNetworkInterface'
+                  - 'elasticloadbalancing:DeregisterInstancesFromLoadBalancer'
+                  - 'elasticloadbalancing:DeregisterTargets'
+                  - 'elasticloadbalancing:Describe*'
+                  - 'elasticloadbalancing:RegisterInstancesWithLoadBalancer'
+                  - 'elasticloadbalancing:RegisterTargets'
+                Resource: '*'
+
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ ecs-tasks.amazonaws.com ]
+            Action: [ 'sts:AssumeRole' ]
+      Path: /
+      Policies:
+        - PolicyName: AmazonECSTaskExecutionRolePolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ecr:GetAuthorizationToken'
+                  - 'ecr:BatchCheckLayerAvailability'
+                  - 'ecr:GetDownloadUrlForLayer'
+                  - 'ecr:BatchGetImage'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+
+  ECSTaskFetchWeatherLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ ecs-tasks.amazonaws.com ]
+            Action: [ 'sts:AssumeRole' ]
+      Path: /
+      Policies:
+        - PolicyName: AmazonECSTaskFetchWeatherLambdaRolePolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'lambda:InvokeFunction'
+                Resource: !GetAtt WeatherLambdaFunction.Arn
+
+
+  # The ECS Task Definition and Service
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref ServiceName
+      Cpu: 256
+      Memory: 1024
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn:
+        !Ref ECSTaskExecutionRole
+      TaskRoleArn:
+        !Ref ECSTaskFetchWeatherLambdaRole
+      ContainerDefinitions:
+        - Name: !Ref ServiceName
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/willitsnow_private:latest'
+          Cpu: 256
+          Memory: 1024
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              HostPort: !Ref HostPort
+
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn: Listener
+    Properties:
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref ECSTaskDefinition
+      DesiredCount: 2
+      LaunchType: FARGATE
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 75
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref FargateContainerSecurityGroup
+          Subnets:
+            - !Ref PublicSubnetOne
+            - !Ref PublicSubnetTwo
+      LoadBalancers:
+        - ContainerName: !Ref ServiceName
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 6
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      TargetType: ip
+      Name: !Ref ServiceName
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref VPC
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn:
+      - PublicLoadBalancer
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref PublicLoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+
+  HttpRedirectListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn:
+      - PublicLoadBalancer
+    Properties:
+      DefaultActions:
+        - Type: "redirect"
+          RedirectConfig:
+            Protocol: "HTTPS"
+            Port: "443"
+            StatusCode: "HTTP_301"
+      LoadBalancerArn: !Ref PublicLoadBalancer
+      Port: 80
+      Protocol: "HTTP"
+
+  RecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        HostedZoneId: !GetAtt PublicLoadBalancer.CanonicalHostedZoneID
+        DNSName: !GetAtt PublicLoadBalancer.DNSName
+
+  WWWRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Join ['.', ['www', !Ref DomainName]]
+      Type: A
+      AliasTarget:
+        HostedZoneId: !GetAtt PublicLoadBalancer.CanonicalHostedZoneID
+        DNSName: !GetAtt PublicLoadBalancer.DNSName
+
+  AlternativeDomainRecordSet:
+    Type: AWS::Route53::RecordSet
+    Condition: HasAlternativeDomain
+    Properties:
+      HostedZoneId: !Ref AlternativeHostedZoneId
+      Name: !Ref AlternativeDomainName
+      Type: A
+      AliasTarget:
+        HostedZoneId: !GetAtt PublicLoadBalancer.CanonicalHostedZoneID
+        DNSName: !GetAtt PublicLoadBalancer.DNSName
+
+  AlternativeDomainWWWRecordSet:
+    Type: AWS::Route53::RecordSet
+    Condition: HasAlternativeDomain
+    Properties:
+      HostedZoneId: !Ref AlternativeHostedZoneId
+      Name: !Join [ '.', [ 'www', !Ref AlternativeDomainName ] ]
+      Type: A
+      AliasTarget:
+        HostedZoneId: !GetAtt PublicLoadBalancer.CanonicalHostedZoneID
+        DNSName: !GetAtt PublicLoadBalancer.DNSName
+
+  WeatherLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: '*'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+
+  WeatherLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          const { SecretsManagerClient, GetSecretValueCommand } = require("@aws-sdk/client-secrets-manager"); 
+  
+          const client = new SecretsManagerClient();
+          
+          exports.handler = async function(event) {
+              try {
+                  const input = {
+                    SecretId: "dev/weatherapi.com/api",
+                  };
+                  const command = new GetSecretValueCommand(input);
+                  const response = await client.send(command);
+                  const secretString = response.SecretString;
+
+                  if(secretString) {
+                      const secrets = JSON.parse(secretString);
+                      const url = `https://api.weatherapi.com/v1/forecast.json?key=${secrets.apikey}&q=Seattle&days=7&aqi=no&alerts=no`;
+                      try {
+                          const response = await fetch(url);
+                          if (!response.ok) { 
+                              throw new Error(`HTTP Error: ${response.status}`);
+                          }
+                          const data = await response.json();
+                          return {
+                              statusCode: 200,
+                              body: data,
+                              headers: {
+                                  'Content-Type': 'application/json',
+                              },
+                          };
+                      } catch (error) {
+                          console.error(error);
+                          return {
+                              statusCode: 500,
+                              body: JSON.stringify({ msg: 'Internal Server Error' }),
+                              headers: {
+                                  'Content-Type': 'application/json',
+                              },
+                          };
+                      }
+                  }
+              } catch (error) {
+                  console.log(`Error retrieving secret: ${error}`);
+              }
+          };
+      FunctionName: FetchWeatherLambda
+      Handler: index.handler
+      Role: !GetAtt WeatherLambdaExecutionRole.Arn
+      Runtime: nodejs18.x
+      Timeout: 10
+
+
+  WeatherLambdaVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.lambda
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PublicSubnetOne
+        - !Ref PublicSubnetTwo
+      SecurityGroupIds:
+        - !Ref WeatherLambdaSG
+
+  WeatherLambdaSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: Allow access to Lambda endpoint from within VPC
+      SecurityGroupIngress:
+        - CidrIp: !FindInMap ['SubnetConfig', 'VPC', 'CIDR']
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
