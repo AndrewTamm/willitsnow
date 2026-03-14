@@ -33,3 +33,11 @@ aws cloudformation create-change-set --change-set-name SampleChangeSet --stack-n
     --template-body file://infra.yaml `
     --capabilities CAPABILITY_IAM
 
+aws cloudformation wait change-set-create-complete --change-set-name SampleChangeSet --stack-name $serviceName
+
+aws cloudformation execute-change-set --change-set-name SampleChangeSet --stack-name $serviceName
+
+aws cloudformation wait stack-update-complete --stack-name $serviceName
+
+Write-Host "Stack update complete."
+
