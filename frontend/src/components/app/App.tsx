@@ -49,9 +49,7 @@ class App extends React.Component<IProps, IState> {
         <div className="row">
           {
             weather?.daily.map((dailyWeather: DailyWeather) => (
-              <div className={"forecasts"} key={dailyWeather.time}>
-                <WeatherCard weather={dailyWeather}/>
-              </div>
+              <WeatherCard key={dailyWeather.time} weather={dailyWeather}/>
             ))
           }
         </div>

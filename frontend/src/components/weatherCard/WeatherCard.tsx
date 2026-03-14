@@ -11,7 +11,7 @@ interface IProps {
 class WeatherCard extends React.Component<IProps> {
     render(): React.ReactNode {
         return (
-            <div className="wc col s12 m6 l4" data-testid="weather-card">
+            <div className="forecasts wc col s12 m6 l4" data-testid="weather-card">
                 <div className="card blue-grey darken-1 ">
 
                     { (this.props.weather.willItSnow || this.props.weather.willItRain) ?
